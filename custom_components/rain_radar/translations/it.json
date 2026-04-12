@@ -1,0 +1,83 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Rain Radar – modalità posizione",
+        "description": "Come deve Rain Radar determinare la posizione da monitorare?",
+        "data": {
+          "location_mode": "Modalità posizione"
+        }
+      },
+      "fixed": {
+        "title": "Rain Radar – posizione fissa",
+        "description": "Inserisci le coordinate del punto da monitorare.",
+        "data": {
+          "latitude": "Latitudine",
+          "longitude": "Longitudine",
+          "radius": "Raggio di ricerca (km)",
+          "min_intensity": "Soglia intensità minima (dBZ)"
+        },
+        "data_description": {
+          "radius": "Raggio in chilometri attorno alla posizione da scansionare (1–500).",
+          "min_intensity": "Segnala pioggia solo se la riflettività supera questo valore. 10 dBZ ≈ pioggerella, 30 dBZ ≈ pioggia moderata."
+        }
+      },
+      "tracker": {
+        "title": "Rain Radar – device tracker",
+        "description": "Seleziona il device tracker la cui posizione in tempo reale verrà monitorata.",
+        "data": {
+          "device_tracker": "Device tracker",
+          "radius": "Raggio di ricerca (km)",
+          "min_intensity": "Soglia intensità minima (dBZ)"
+        },
+        "data_description": {
+          "device_tracker": "Il tracker deve avere gli attributi GPS (latitudine/longitudine).",
+          "radius": "Raggio in chilometri attorno al dispositivo tracciato da scansionare (1–500).",
+          "min_intensity": "Segnala pioggia solo se la riflettività supera questo valore. 10 dBZ ≈ pioggerella, 30 dBZ ≈ pioggia moderata."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Impossibile raggiungere l'API RainViewer. Controlla la connessione internet.",
+      "no_radar_data": "L'API RainViewer non ha restituito frame radar.",
+      "tracker_unavailable": "Il device tracker selezionato non è disponibile. Assicurati che il dispositivo sia online.",
+      "tracker_no_gps": "Il device tracker selezionato non ha coordinate GPS. Abilita la condivisione della posizione sul dispositivo.",
+      "unknown": "Errore imprevisto. Controlla i log di Home Assistant per i dettagli."
+    },
+    "abort": {
+      "already_configured": "Esiste già una voce Rain Radar per questa posizione."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Opzioni Rain Radar",
+        "data": {
+          "latitude": "Latitudine",
+          "longitude": "Longitudine",
+          "device_tracker": "Device tracker",
+          "radius": "Raggio di ricerca (km)",
+          "min_intensity": "Soglia intensità minima (dBZ)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "rain_detected": {
+        "name": "Pioggia rilevata"
+      }
+    },
+    "sensor": {
+      "nearest_precipitation": {
+        "name": "Precipitazione più vicina"
+      },
+      "nearest_bearing": {
+        "name": "Direzione precipitazione più vicina"
+      },
+      "max_intensity": {
+        "name": "Intensità massima"
+      }
+    }
+  }
+}

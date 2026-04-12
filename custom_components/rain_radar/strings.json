@@ -1,0 +1,83 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Rain Radar – location mode",
+        "description": "How should Rain Radar determine the position to monitor?",
+        "data": {
+          "location_mode": "Location mode"
+        }
+      },
+      "fixed": {
+        "title": "Rain Radar – fixed position",
+        "description": "Enter the coordinates of the point to monitor.",
+        "data": {
+          "latitude": "Latitude",
+          "longitude": "Longitude",
+          "radius": "Search radius (km)",
+          "min_intensity": "Minimum intensity threshold (dBZ)"
+        },
+        "data_description": {
+          "radius": "Radius in kilometres around the position to scan for precipitation (1–500).",
+          "min_intensity": "Only report rain when reflectivity exceeds this value. 10 dBZ ≈ drizzle, 30 dBZ ≈ moderate rain."
+        }
+      },
+      "tracker": {
+        "title": "Rain Radar – device tracker",
+        "description": "Select the device tracker whose live location will be monitored.",
+        "data": {
+          "device_tracker": "Device tracker",
+          "radius": "Search radius (km)",
+          "min_intensity": "Minimum intensity threshold (dBZ)"
+        },
+        "data_description": {
+          "device_tracker": "The tracker must have GPS attributes (latitude/longitude).",
+          "radius": "Radius in kilometres around the tracked device to scan for precipitation (1–500).",
+          "min_intensity": "Only report rain when reflectivity exceeds this value. 10 dBZ ≈ drizzle, 30 dBZ ≈ moderate rain."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to reach the RainViewer API. Check your internet connection.",
+      "no_radar_data": "The RainViewer API returned no radar frames.",
+      "tracker_unavailable": "The selected device tracker is unavailable. Make sure the device is online.",
+      "tracker_no_gps": "The selected device tracker has no GPS coordinates. Enable location sharing on the device.",
+      "unknown": "Unexpected error. Check the Home Assistant logs for details."
+    },
+    "abort": {
+      "already_configured": "A Rain Radar entry for this location is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Rain Radar options",
+        "data": {
+          "latitude": "Latitude",
+          "longitude": "Longitude",
+          "device_tracker": "Device tracker",
+          "radius": "Search radius (km)",
+          "min_intensity": "Minimum intensity threshold (dBZ)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "rain_detected": {
+        "name": "Rain detected"
+      }
+    },
+    "sensor": {
+      "nearest_precipitation": {
+        "name": "Nearest precipitation"
+      },
+      "nearest_bearing": {
+        "name": "Nearest precipitation bearing"
+      },
+      "max_intensity": {
+        "name": "Maximum intensity"
+      }
+    }
+  }
+}
