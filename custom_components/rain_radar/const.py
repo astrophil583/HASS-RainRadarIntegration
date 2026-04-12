@@ -27,6 +27,12 @@ TILE_URL = "https://tilecache.rainviewer.com{path}/256/{zoom}/{x}/{y}/2/1_1.png"
 ZOOM_MIN = 4
 ZOOM_MAX = 9
 
+# Storm approach trend detection
+APPROACH_HISTORY_MAXLEN = 6     # rolling window size (~30 min at 5-min intervals)
+APPROACH_HISTORY_MIN_POINTS = 3 # samples needed before publishing a trend
+MIN_APPROACH_SPEED_KMH = 1.0    # speeds below this are treated as pixel-level noise
+MAX_BEARING_STD_DEG = 30.0      # max circular std-dev of bearings to confirm same cell
+
 # Rough reference colors for RainViewer color scheme 2 → dBZ mapping.
 # These RGB tuples represent the dominant hue bands in the palette.
 # Nearest-hue matching is used at runtime (see coordinator.rgb_to_dbz).

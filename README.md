@@ -6,7 +6,7 @@ Home Assistant custom integration that detects precipitation near your location 
 
 ## How it works
 
-Every 5 minutes the integration fetches the latest radar frame from RainViewer, downloads the relevant map tiles for your area, and scans each pixel inside your configured radius. Pixel colour is mapped to radar reflectivity (dBZ) to determine whether rain is present and how intense it is.
+Every 5 minutes the integration fetches the latest radar frame from RainViewer, downloads the relevant map tiles for your area, and scans each pixel inside your configured radius. Pixel colour is mapped to radar reflectivity (dBZ) to determine whether rain is present, how intense it is, and — over time — whether a storm cell is approaching.
 
 ---
 
@@ -46,16 +46,33 @@ All options can be changed later via **Configure** in the integration card witho
 
 ## Entities
 
-Each entry creates one device with four entities.
+Each entry creates one device with six entities.
 
 | Entity | Type | Unit | Description |
 |--------|------|------|-------------|
 | Rain detected | `binary_sensor` | on/off | ON when rain is found inside the radius |
 | Nearest precipitation | `sensor` | km | Distance to the closest rain pixel |
 | Nearest precipitation bearing | `sensor` | ° | Compass bearing to the closest rain (0° = N, 90° = E, …) |
+| Storm approach speed | `sensor` | km/h | Speed at which the storm is closing in (see below) |
+| Rain ETA | `sensor` | min | Estimated minutes until rain reaches your position |
 | Maximum intensity | `sensor` | dBZ | Highest reflectivity value found inside the radius |
 
-The three numeric sensors return **unknown** when no rain is detected.
+Sensors that have no meaningful value return **unknown**: the distance/bearing/intensity sensors when no rain is detected, and the approach/ETA sensors when no confirmed approach is in progress.
+
+---
+
+## Storm approach detection
+
+The approach speed and ETA sensors use a rolling window of the last **6 updates (~30 minutes)** to detect whether a storm is genuinely closing in. A value is published only when **all four conditions** are met simultaneously:
+
+1. At least **3 samples** are available in the window (15 minutes of data).
+2. The **distance trend is negative** — linear regression over the window confirms the storm is getting closer.
+3. The inferred speed is **≥ 1 km/h** — filters out sub-pixel jitter from the radar tile resolution.
+4. The **bearing is consistent** across samples (circular standard deviation < 30°) — this ensures the integration is tracking the *same storm cell*, not a new one that appeared from a different direction.
+
+When rain disappears entirely, the history is cleared so stale bearings never bias a future detection.
+
+> The ETA sensor shows **0** when rain is already overhead (distance = 0 km). It shows **unknown** when the storm is not approaching or there is not yet enough history.
 
 ---
 
@@ -67,11 +84,37 @@ If the tracker is unavailable or has no GPS fix, the update is skipped and Home 
 
 ---
 
-## Automation example
+## Automation examples
+
+### Alert when rain is approaching
 
 ```yaml
 automation:
-  - alias: "Rain approaching alert"
+  - alias: "Storm approaching alert"
+    trigger:
+      - platform: state
+        entity_id: sensor.rain_radar_rain_eta
+    condition:
+      - condition: template
+        value_template: "{{ states('sensor.rain_radar_rain_eta') not in ['unknown', 'unavailable'] }}"
+      - condition: numeric_state
+        entity_id: sensor.rain_radar_rain_eta
+        below: 30
+    action:
+      - service: notify.mobile_app
+        data:
+          title: "Rain in {{ states('sensor.rain_radar_rain_eta') | int }} minutes"
+          message: >
+            Storm approaching from {{ states('sensor.rain_radar_nearest_precipitation_bearing') }}°
+            at {{ states('sensor.rain_radar_approach_speed') }} km/h,
+            currently {{ states('sensor.rain_radar_nearest_precipitation') }} km away.
+```
+
+### Alert when rain is detected nearby
+
+```yaml
+automation:
+  - alias: "Rain nearby alert"
     trigger:
       - platform: state
         entity_id: binary_sensor.rain_radar_rain_detected
@@ -97,4 +140,5 @@ automation:
 - Radar data is updated by RainViewer roughly every 10 minutes; the 5-minute poll interval ensures you always have the latest available frame.
 - Pixel-to-dBZ colour mapping is approximate; the RainViewer palette is matched via nearest-colour lookup.
 - At very small radii (< 5 km) the tile zoom may not have sufficient resolution to detect small cells.
+- The approach sensors need **15 minutes** of continuous rain detection before they can produce a value.
 - RainViewer coverage varies by region; areas without radar stations will show no data.

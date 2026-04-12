@@ -75,6 +75,12 @@
       "nearest_bearing": {
         "name": "Nearest precipitation bearing"
       },
+      "approach_speed": {
+        "name": "Storm approach speed"
+      },
+      "rain_eta": {
+        "name": "Rain ETA"
+      },
       "max_intensity": {
         "name": "Maximum intensity"
       }

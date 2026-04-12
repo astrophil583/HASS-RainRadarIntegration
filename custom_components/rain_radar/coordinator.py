@@ -6,6 +6,7 @@ import colorsys
 import io
 import logging
 import math
+from collections import deque
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -14,10 +15,15 @@ import aiohttp
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .const import (
     ALPHA_THRESHOLD,
+    APPROACH_HISTORY_MAXLEN,
+    APPROACH_HISTORY_MIN_POINTS,
     DBZ_COLOR_REFERENCES,
+    MAX_BEARING_STD_DEG,
+    MIN_APPROACH_SPEED_KMH,
     RAINVIEWER_API_URL,
     TILE_SIZE,
     TILE_URL,
@@ -28,15 +34,20 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# Each history entry: (utc_datetime, distance_km, bearing_deg | None)
+_HistoryEntry = tuple  # (datetime, float, float | None)
+
 
 @dataclass
 class RainRadarData:
     """Processed result from one radar scan."""
 
     is_raining: bool
-    nearest_distance_km: float | None   # None when no rain detected
-    nearest_bearing_deg: float | None   # degrees from N clockwise; None when no rain
-    max_intensity_dbz: float | None     # None when no rain detected
+    nearest_distance_km: float | None    # None when no rain detected
+    nearest_bearing_deg: float | None    # degrees from N clockwise; None when no rain
+    max_intensity_dbz: float | None      # None when no rain detected
+    approach_speed_kmh: float | None     # None = not approaching / insufficient data
+    eta_minutes: float | None            # None = same; 0.0 = rain already overhead
 
 
 # ---------------------------------------------------------------------------
@@ -135,12 +146,101 @@ def _rgb_to_dbz(r: int, g: int, b: int) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Approach trend helpers
+# ---------------------------------------------------------------------------
+
+def _linear_slope(xs: list[float], ys: list[float]) -> float | None:
+    """Least-squares slope of (xs, ys). Returns None if degenerate."""
+    n = len(xs)
+    if n < 2:
+        return None
+    sx = sum(xs)
+    sy = sum(ys)
+    sxy = sum(x * y for x, y in zip(xs, ys))
+    sx2 = sum(x * x for x in xs)
+    denom = n * sx2 - sx * sx
+    if abs(denom) < 1e-9:
+        return None
+    return (n * sxy - sx * sy) / denom
+
+
+def _circular_std_deg(bearings: list[float]) -> float:
+    """Circular standard deviation of bearing angles (degrees), handling wrap-around.
+
+    Uses the Yamartino / Fisher formula:  σ = sqrt(−2·ln R)
+    where R is the mean resultant length of the unit vectors.
+    Returns 180.0 (maximum dispersion) when bearings are empty or evenly spread.
+    """
+    if not bearings:
+        return 180.0
+    rads = [math.radians(b) for b in bearings]
+    sin_m = sum(math.sin(r) for r in rads) / len(rads)
+    cos_m = sum(math.cos(r) for r in rads) / len(rads)
+    R = math.sqrt(sin_m ** 2 + cos_m ** 2)
+    if R < 1e-9:
+        return 180.0
+    return math.degrees(math.sqrt(-2.0 * math.log(R)))
+
+
+def _compute_approach(
+    history: deque,
+    current_distance: float,
+) -> tuple[float | None, float | None]:
+    """Compute approach speed (km/h) and ETA (minutes).
+
+    Returns (None, None) unless ALL of the following hold:
+      1. ≥ APPROACH_HISTORY_MIN_POINTS samples in the window.
+      2. Linear slope of distances is negative (storm getting closer).
+      3. Inferred speed ≥ MIN_APPROACH_SPEED_KMH (not pixel-level noise).
+      4. Circular std-dev of bearings < MAX_BEARING_STD_DEG — ensures we are
+         tracking the *same* cell, not a new one appearing from another direction.
+
+    Returns (speed_kmh, 0.0) when rain is already overhead (distance == 0).
+    """
+    if len(history) < APPROACH_HISTORY_MIN_POINTS:
+        return None, None
+
+    t0 = history[0][0].timestamp()
+    xs = [(ts.timestamp() - t0) for ts, _, _ in history]   # seconds elapsed
+    ys = [d for _, d, _ in history]                        # distances in km
+
+    # Condition 1+2: negative distance trend
+    slope = _linear_slope(xs, ys)   # km / second (negative = approaching)
+    if slope is None or slope >= 0:
+        return None, None
+
+    # Condition 3: minimum speed
+    approach_speed_kmh = abs(slope) * 3600.0
+    if approach_speed_kmh < MIN_APPROACH_SPEED_KMH:
+        return None, None
+
+    # Condition 4: bearing consistency
+    # Only use entries where distance > 0 (bearing is undefined at distance = 0)
+    valid_bearings = [b for _, d, b in history if b is not None and d > 0.0]
+    if len(valid_bearings) >= APPROACH_HISTORY_MIN_POINTS:
+        std = _circular_std_deg(valid_bearings)
+        if std > MAX_BEARING_STD_DEG:
+            _LOGGER.debug(
+                "Approach trend rejected: bearing circular std=%.1f° > threshold %.1f°"
+                " — likely a different storm cell",
+                std, MAX_BEARING_STD_DEG,
+            )
+            return None, None
+
+    # All conditions satisfied
+    if current_distance == 0.0:
+        return round(approach_speed_kmh, 1), 0.0
+
+    eta_min = current_distance / abs(slope) / 60.0
+    return round(approach_speed_kmh, 1), round(eta_min, 0)
+
+
+# ---------------------------------------------------------------------------
 # Coordinator
 # ---------------------------------------------------------------------------
 
 # Return type from _analyse_tile:
 # (rain_found, nearest_dist_km, nearest_gx, nearest_gy, max_dbz)
-# nearest_gx/gy are global pixel coords of the nearest rain pixel (for bearing calc)
 _TileResult = tuple[bool, float | None, float | None, float | None, float | None]
 
 
@@ -177,6 +277,11 @@ class RainRadarCoordinator(DataUpdateCoordinator[RainRadarData]):
         # Exposed for entity display; updated each cycle in tracker mode
         self.latitude: float = latitude or 0.0
         self.longitude: float = longitude or 0.0
+
+        # Rolling history for approach trend: (utc_datetime, distance_km, bearing_deg|None)
+        self._distance_history: deque[_HistoryEntry] = deque(
+            maxlen=APPROACH_HISTORY_MAXLEN
+        )
 
     # ------------------------------------------------------------------
     # Position resolution
@@ -256,10 +361,7 @@ class RainRadarCoordinator(DataUpdateCoordinator[RainRadarData]):
                 dpx = gpx - cx_global
                 dpy = gpy - cy_global
                 dist_km = math.sqrt(dpx * dpx + dpy * dpy) * kpp
-                # Sub-pixel offset: if the rain is within one pixel's width of
-                # our exact (fractional) position, report 0 km — the pixel IS
-                # "under our feet" and the residual distance is just quantisation
-                # error from integer pixel coordinates.
+                # Sub-pixel clamp: distance within one pixel width → rain is overhead
                 if dist_km < kpp:
                     dist_km = 0.0
 
@@ -372,16 +474,37 @@ class RainRadarCoordinator(DataUpdateCoordinator[RainRadarData]):
             rain_lat, rain_lon = _global_pixel_to_lat_lon(nearest_gx, nearest_gy, zoom)
             bearing = _geodetic_bearing(lat, lon, rain_lat, rain_lon)
 
+        # 7. Update rolling history
+        #    - Append when rain is present (distance may be 0 if overhead)
+        #    - Clear when rain disappears entirely so stale data doesn't bias future trends
+        if nearest_dist is not None:
+            self._distance_history.append((dt_util.utcnow(), nearest_dist, bearing))
+        else:
+            if self._distance_history:
+                _LOGGER.debug("Rain gone — clearing approach history")
+            self._distance_history.clear()
+
+        # 8. Compute approach trend (distance + bearing consistency check)
+        approach_speed, eta_min = _compute_approach(
+            self._distance_history,
+            nearest_dist if nearest_dist is not None else 0.0,
+        )
+
         _LOGGER.debug(
-            "Scan complete: raining=%s  nearest=%.1f km  bearing=%.0f°  max=%.0f dBZ",
+            "Scan complete: raining=%s  nearest=%.1f km  bearing=%.0f°  "
+            "max=%.0f dBZ  approach=%.1f km/h  eta=%.0f min",
             is_raining,
             nearest_dist if nearest_dist is not None else -1,
             bearing if bearing is not None else -1,
             max_dbz if max_dbz is not None else -1,
+            approach_speed if approach_speed is not None else -1,
+            eta_min if eta_min is not None else -1,
         )
         return RainRadarData(
             is_raining=is_raining,
             nearest_distance_km=nearest_dist,
             nearest_bearing_deg=bearing,
             max_intensity_dbz=max_dbz,
+            approach_speed_kmh=approach_speed,
+            eta_minutes=eta_min,
         )

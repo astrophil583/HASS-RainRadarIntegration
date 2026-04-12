@@ -1,4 +1,4 @@
-"""Sensors: nearest precipitation distance, bearing, and maximum radar intensity."""
+"""Sensors: nearest precipitation distance, bearing, approach speed, ETA, max intensity."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,7 +11,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfLength
+from homeassistant.const import UnitOfLength, UnitOfSpeed, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -41,12 +41,33 @@ SENSOR_DESCRIPTIONS: tuple[RainRadarSensorDescription, ...] = (
     RainRadarSensorDescription(
         key="nearest_bearing",
         translation_key="nearest_bearing",
-        # SensorDeviceClass.WIND_DIRECTION is the standard HA class for compass bearings
-        device_class=SensorDeviceClass.WIND_DIRECTION,
+        # No device_class: SensorDeviceClass.WIND_DIRECTION uses meteorological
+        # convention (direction FROM which it comes) and inverts the arrow display.
+        # A plain ° value is unambiguous for automations.
         native_unit_of_measurement="°",
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=0,
         value_fn=lambda data: data.nearest_bearing_deg,
+    ),
+    RainRadarSensorDescription(
+        key="approach_speed",
+        translation_key="approach_speed",
+        device_class=SensorDeviceClass.SPEED,
+        native_unit_of_measurement=UnitOfSpeed.KILOMETERS_PER_HOUR,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        # None when storm is not approaching or data is insufficient
+        value_fn=lambda data: data.approach_speed_kmh,
+    ),
+    RainRadarSensorDescription(
+        key="rain_eta",
+        translation_key="rain_eta",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=0,
+        # None when not approaching; 0 when rain is already overhead
+        value_fn=lambda data: data.eta_minutes,
     ),
     RainRadarSensorDescription(
         key="max_intensity",
@@ -100,7 +121,7 @@ class RainRadarSensor(CoordinatorEntity[RainRadarCoordinator], SensorEntity):
 
     @property
     def native_value(self) -> float | None:
-        """Return the sensor value, or None (→ 'unknown') when no rain is present."""
+        """Return the sensor value, or None (→ 'unknown') when unavailable."""
         if self.coordinator.data is None:
             return None
         return self.entity_description.value_fn(self.coordinator.data)

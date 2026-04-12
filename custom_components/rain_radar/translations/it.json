@@ -75,6 +75,12 @@
       "nearest_bearing": {
         "name": "Direzione precipitazione più vicina"
       },
+      "approach_speed": {
+        "name": "Velocità di avvicinamento temporale"
+      },
+      "rain_eta": {
+        "name": "Arrivo previsto pioggia"
+      },
       "max_intensity": {
         "name": "Intensità massima"
       }
