@@ -256,6 +256,12 @@ class RainRadarCoordinator(DataUpdateCoordinator[RainRadarData]):
                 dpx = gpx - cx_global
                 dpy = gpy - cy_global
                 dist_km = math.sqrt(dpx * dpx + dpy * dpy) * kpp
+                # Sub-pixel offset: if the rain is within one pixel's width of
+                # our exact (fractional) position, report 0 km — the pixel IS
+                # "under our feet" and the residual distance is just quantisation
+                # error from integer pixel coordinates.
+                if dist_km < kpp:
+                    dist_km = 0.0
 
                 if dist_km > radius_km:
                     continue
