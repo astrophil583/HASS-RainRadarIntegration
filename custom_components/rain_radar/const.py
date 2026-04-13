@@ -25,7 +25,8 @@ TILE_URL = "https://tilecache.rainviewer.com{path}/256/{zoom}/{x}/{y}/2/1_1.png"
 
 # Minimum/maximum zoom levels for tile fetching
 ZOOM_MIN = 4
-ZOOM_MAX = 9
+ZOOM_MAX = 7  # RainViewer radar tiles above zoom 7 are often empty (transparent PNG)
+              # even on HTTP 200 — the native radar resolution doesn't fill finer tiles.
 
 # Storm approach trend detection
 APPROACH_HISTORY_MAXLEN = 6     # rolling window size (~30 min at 5-min intervals)

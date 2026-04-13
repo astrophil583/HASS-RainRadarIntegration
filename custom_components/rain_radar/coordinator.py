@@ -37,6 +37,12 @@ _LOGGER = logging.getLogger(__name__)
 # Each history entry: (utc_datetime, distance_km, bearing_deg | None)
 _HistoryEntry = tuple  # (datetime, float, float | None)
 
+# Return type from _fetch_and_analyse:
+# (tile_ok, rain_found, nearest_dist_km, nearest_gx, nearest_gy, max_dbz)
+# tile_ok=False means the HTTP download failed (tile not in RainViewer cache at this zoom).
+# tile_ok=True, rain_found=False means the tile downloaded fine but had no rain pixels.
+_TileResult = tuple[bool, bool, float | None, float | None, float | None, float | None]
+
 
 @dataclass
 class RainRadarData:
@@ -165,12 +171,7 @@ def _linear_slope(xs: list[float], ys: list[float]) -> float | None:
 
 
 def _circular_std_deg(bearings: list[float]) -> float:
-    """Circular standard deviation of bearing angles (degrees), handling wrap-around.
-
-    Uses the Yamartino / Fisher formula:  σ = sqrt(−2·ln R)
-    where R is the mean resultant length of the unit vectors.
-    Returns 180.0 (maximum dispersion) when bearings are empty or evenly spread.
-    """
+    """Circular standard deviation of bearing angles (degrees), handling wrap-around."""
     if not bearings:
         return 180.0
     rads = [math.radians(b) for b in bearings]
@@ -193,32 +194,26 @@ def _compute_approach(
       2. Linear slope of distances is negative (storm getting closer).
       3. Inferred speed ≥ MIN_APPROACH_SPEED_KMH (not pixel-level noise).
       4. Circular std-dev of bearings < MAX_BEARING_STD_DEG — ensures we are
-         tracking the *same* cell, not a new one appearing from another direction.
-
-    Returns (speed_kmh, 0.0) when rain is already overhead (distance == 0).
+         tracking the *same* cell, not a new one from a different direction.
     """
     if len(history) < APPROACH_HISTORY_MIN_POINTS:
         return None, None
 
     t0 = history[0][0].timestamp()
-    xs = [(ts.timestamp() - t0) for ts, _, _ in history]   # seconds elapsed
-    ys = [d for _, d, _ in history]                        # distances in km
+    xs = [(ts.timestamp() - t0) for ts, _, _ in history]
+    ys = [d for _, d, _ in history]
 
-    # Condition 1+2: negative distance trend
-    slope = _linear_slope(xs, ys)   # km / second (negative = approaching)
+    slope = _linear_slope(xs, ys)
     if slope is None or slope >= 0:
         return None, None
 
-    # Condition 3: minimum speed
     approach_speed_kmh = abs(slope) * 3600.0
     if approach_speed_kmh < MIN_APPROACH_SPEED_KMH:
         return None, None
 
-    # Condition 4: bearing consistency
-    # Only use entries where distance > 0 (bearing is undefined at distance = 0)
-    valid_bearings = [b for _, d, b in history if b is not None and d > 0.0]
-    if len(valid_bearings) >= APPROACH_HISTORY_MIN_POINTS:
-        std = _circular_std_deg(valid_bearings)
+    bearings = [b for _, d, b in history if b is not None and d > 0.0]
+    if len(bearings) >= APPROACH_HISTORY_MIN_POINTS:
+        std = _circular_std_deg(bearings)
         if std > MAX_BEARING_STD_DEG:
             _LOGGER.debug(
                 "Approach trend rejected: bearing circular std=%.1f° > threshold %.1f°"
@@ -227,7 +222,6 @@ def _compute_approach(
             )
             return None, None
 
-    # All conditions satisfied
     if current_distance == 0.0:
         return round(approach_speed_kmh, 1), 0.0
 
@@ -238,11 +232,6 @@ def _compute_approach(
 # ---------------------------------------------------------------------------
 # Coordinator
 # ---------------------------------------------------------------------------
-
-# Return type from _analyse_tile:
-# (rain_found, nearest_dist_km, nearest_gx, nearest_gy, max_dbz)
-_TileResult = tuple[bool, float | None, float | None, float | None, float | None]
-
 
 class RainRadarCoordinator(DataUpdateCoordinator[RainRadarData]):
     """Fetch and analyse radar tiles every UPDATE_INTERVAL_MINUTES minutes."""
@@ -274,11 +263,9 @@ class RainRadarCoordinator(DataUpdateCoordinator[RainRadarData]):
         self.radius_km = radius_km
         self.min_intensity_dbz = min_intensity_dbz
 
-        # Exposed for entity display; updated each cycle in tracker mode
         self.latitude: float = latitude or 0.0
         self.longitude: float = longitude or 0.0
 
-        # Rolling history for approach trend: (utc_datetime, distance_km, bearing_deg|None)
         self._distance_history: deque[_HistoryEntry] = deque(
             maxlen=APPROACH_HISTORY_MAXLEN
         )
@@ -322,13 +309,8 @@ class RainRadarCoordinator(DataUpdateCoordinator[RainRadarData]):
         kpp: float,
         min_intensity_dbz: float,
         radius_px: float,
-    ) -> _TileResult:
-        """Scan one tile PNG.
-
-        Returns (rain_found, nearest_dist_km, nearest_gx, nearest_gy, max_dbz).
-        nearest_gx/gy are global pixel coordinates of the closest qualifying rain
-        pixel — used by the caller to compute the geodetic bearing.
-        """
+    ) -> tuple[bool, float | None, float | None, float | None, float | None]:
+        """Scan one tile PNG. Returns (rain_found, nearest_dist, gx, gy, max_dbz)."""
         from PIL import Image  # noqa: PLC0415
 
         img = Image.open(io.BytesIO(tile_bytes)).convert("RGBA")
@@ -361,10 +343,8 @@ class RainRadarCoordinator(DataUpdateCoordinator[RainRadarData]):
                 dpx = gpx - cx_global
                 dpy = gpy - cy_global
                 dist_km = math.sqrt(dpx * dpx + dpy * dpy) * kpp
-                # Sub-pixel clamp: distance within one pixel width → rain is overhead
                 if dist_km < kpp:
                     dist_km = 0.0
-
                 if dist_km > radius_km:
                     continue
 
@@ -392,14 +372,13 @@ class RainRadarCoordinator(DataUpdateCoordinator[RainRadarData]):
 
     async def _async_update_data(self) -> RainRadarData:
         """Fetch the latest radar tile(s) and analyse them."""
-        # 1. Resolve current position
         lat, lon = self._resolve_position()
         self.latitude = lat
         self.longitude = lon
 
         session = async_get_clientsession(self.hass)
 
-        # 2. Fetch the weather-maps index
+        # Fetch the weather-maps index
         try:
             async with asyncio.timeout(15):
                 async with session.get(RAINVIEWER_API_URL) as resp:
@@ -415,50 +394,91 @@ class RainRadarCoordinator(DataUpdateCoordinator[RainRadarData]):
         radar_path: str = past_frames[-1]["path"]
         _LOGGER.debug("Using radar frame: %s", radar_path)
 
-        # 3. Projection constants
-        zoom = _calculate_zoom(lat, self.radius_km)
-        kpp = _km_per_pixel(lat, zoom)
-        radius_px = self.radius_km / kpp
-        cx_global, cy_global = _lat_lon_to_global_pixel(lat, lon, zoom)
-        tiles = _tiles_in_bounding_box(lat, lon, self.radius_km, zoom)
-        _LOGGER.debug(
-            "zoom=%d  kpp=%.3f km/px  radius_px=%.1f  tiles=%d",
-            zoom, kpp, radius_px, len(tiles),
-        )
-
-        # 4. Download + analyse each tile concurrently
-        async def _fetch_and_analyse(tile_x: int, tile_y: int) -> _TileResult:
+        # ------------------------------------------------------------------
+        # Tile fetch helper — returns (tile_ok, rain_found, dist, gx, gy, dbz)
+        # tile_ok=False means the HTTP download failed (non-200 or network error).
+        # ------------------------------------------------------------------
+        async def _fetch_and_analyse(
+            tile_x: int, tile_y: int, zoom: int,
+            cx_global: float, cy_global: float, kpp: float, radius_px: float,
+        ) -> _TileResult:
             url = TILE_URL.format(path=radar_path, zoom=zoom, x=tile_x, y=tile_y)
             try:
                 async with asyncio.timeout(10):
                     async with session.get(url) as resp:
-                        resp.raise_for_status()
+                        if resp.status != 200:
+                            _LOGGER.warning(
+                                "Tile %d/%d HTTP %d at zoom=%d — not in RainViewer cache",
+                                tile_x, tile_y, resp.status, zoom,
+                            )
+                            return False, False, None, None, None, None
                         tile_bytes = await resp.read()
             except (aiohttp.ClientError, asyncio.TimeoutError) as err:
-                _LOGGER.warning("Failed to download tile %d/%d: %s", tile_x, tile_y, err)
-                return False, None, None, None, None
+                _LOGGER.warning(
+                    "Tile %d/%d download error at zoom=%d: %s",
+                    tile_x, tile_y, zoom, err,
+                )
+                return False, False, None, None, None, None
 
-            return await self.hass.async_add_executor_job(
+            rain_found, dist, gx, gy, dbz = await self.hass.async_add_executor_job(
                 self._analyse_tile,
                 tile_bytes, tile_x, tile_y, zoom,
                 cx_global, cy_global,
                 self.radius_km, kpp,
                 float(self.min_intensity_dbz), radius_px,
             )
+            return True, rain_found, dist, gx, gy, dbz
 
-        results = await asyncio.gather(
-            *[_fetch_and_analyse(tx, ty) for tx, ty in tiles]
-        )
+        # ------------------------------------------------------------------
+        # Zoom fallback loop:
+        # Start at the ideal zoom level. If ALL tiles fail (not in cache),
+        # step down one zoom level and retry — until ZOOM_MIN is reached.
+        # ------------------------------------------------------------------
+        zoom = _calculate_zoom(lat, self.radius_km)
+        results: list[_TileResult] = []
 
-        # 5. Merge results
+        for try_zoom in range(zoom, ZOOM_MIN - 1, -1):
+            kpp = _km_per_pixel(lat, try_zoom)
+            radius_px = self.radius_km / kpp
+            cx_global, cy_global = _lat_lon_to_global_pixel(lat, lon, try_zoom)
+            tiles = _tiles_in_bounding_box(lat, lon, self.radius_km, try_zoom)
+
+            _LOGGER.debug(
+                "zoom=%d  kpp=%.3f km/px  radius_px=%.1f  tiles=%d",
+                try_zoom, kpp, radius_px, len(tiles),
+            )
+
+            results = await asyncio.gather(
+                *[
+                    _fetch_and_analyse(tx, ty, try_zoom, cx_global, cy_global, kpp, radius_px)
+                    for tx, ty in tiles
+                ]
+            )
+
+            tiles_ok = sum(1 for tile_ok, *_ in results if tile_ok)
+            if tiles_ok > 0:
+                zoom = try_zoom
+                break
+
+            if try_zoom > ZOOM_MIN:
+                _LOGGER.warning(
+                    "All %d tile(s) unavailable at zoom=%d, retrying at zoom=%d",
+                    len(tiles), try_zoom, try_zoom - 1,
+                )
+            else:
+                _LOGGER.warning("All tiles unavailable even at minimum zoom=%d", ZOOM_MIN)
+
+        # ------------------------------------------------------------------
+        # Merge results from all tiles
+        # ------------------------------------------------------------------
         is_raining = False
         nearest_dist: float | None = None
         nearest_gx: float | None = None
         nearest_gy: float | None = None
         max_dbz: float | None = None
 
-        for rain_found, dist, rgx, rgy, dbz in results:
-            if not rain_found:
+        for tile_ok, rain_found, dist, rgx, rgy, dbz in results:
+            if not tile_ok or not rain_found:
                 continue
             is_raining = True
             if dist is not None and (nearest_dist is None or dist < nearest_dist):
@@ -468,15 +488,13 @@ class RainRadarCoordinator(DataUpdateCoordinator[RainRadarData]):
             if dbz is not None and (max_dbz is None or dbz > max_dbz):
                 max_dbz = dbz
 
-        # 6. Compute geodetic bearing to nearest rain pixel
+        # Geodetic bearing to nearest rain pixel
         bearing: float | None = None
         if nearest_gx is not None and nearest_gy is not None:
             rain_lat, rain_lon = _global_pixel_to_lat_lon(nearest_gx, nearest_gy, zoom)
             bearing = _geodetic_bearing(lat, lon, rain_lat, rain_lon)
 
-        # 7. Update rolling history
-        #    - Append when rain is present (distance may be 0 if overhead)
-        #    - Clear when rain disappears entirely so stale data doesn't bias future trends
+        # Update rolling approach history
         if nearest_dist is not None:
             self._distance_history.append((dt_util.utcnow(), nearest_dist, bearing))
         else:
@@ -484,7 +502,7 @@ class RainRadarCoordinator(DataUpdateCoordinator[RainRadarData]):
                 _LOGGER.debug("Rain gone — clearing approach history")
             self._distance_history.clear()
 
-        # 8. Compute approach trend (distance + bearing consistency check)
+        # Compute approach trend
         approach_speed, eta_min = _compute_approach(
             self._distance_history,
             nearest_dist if nearest_dist is not None else 0.0,
