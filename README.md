@@ -74,9 +74,9 @@ Sensors that have no meaningful value return **unknown**: the distance/bearing/i
 
 ---
 
-## Storm approach detection
+## Storm approach detection [BETA]
 
-The approach speed and ETA sensors use a rolling window of the last **6 updates (~30 minutes)** to detect whether a storm is genuinely closing in. A value is published only when **all four conditions** are met simultaneously:
+The approach speed and ETA sensors use a rolling window of the last **6 updates (~30 minutes)** to try detect whether a storm is genuinely closing in. A value is published only when **all four conditions** are met simultaneously:
 
 1. At least **3 samples** are available in the window (15 minutes of data).
 2. The **distance trend is negative** — linear regression over the window confirms the storm is getting closer.
