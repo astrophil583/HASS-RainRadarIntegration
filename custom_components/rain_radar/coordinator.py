@@ -378,14 +378,26 @@ class RainRadarCoordinator(DataUpdateCoordinator[RainRadarData]):
 
         session = async_get_clientsession(self.hass)
 
-        # Fetch the weather-maps index
-        try:
-            async with asyncio.timeout(15):
-                async with session.get(RAINVIEWER_API_URL) as resp:
-                    resp.raise_for_status()
-                    maps_data = await resp.json(content_type=None)
-        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
-            raise UpdateFailed(f"Cannot reach RainViewer API: {err}") from err
+        # Fetch the weather-maps index — retry up to 3 times to survive transient
+        # "Network unreachable" blips that resolve within a few seconds.
+        last_err: Exception | None = None
+        maps_data: dict | None = None
+        for attempt in range(3):
+            try:
+                async with asyncio.timeout(15):
+                    async with session.get(RAINVIEWER_API_URL) as resp:
+                        resp.raise_for_status()
+                        maps_data = await resp.json(content_type=None)
+                break  # success — exit retry loop
+            except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+                last_err = err
+                if attempt < 2:
+                    _LOGGER.debug(
+                        "API attempt %d/3 failed (%s), retrying in 3 s…", attempt + 1, err
+                    )
+                    await asyncio.sleep(3)
+        if maps_data is None:
+            raise UpdateFailed(f"Cannot reach RainViewer API: {last_err}") from last_err
 
         past_frames: list[dict] = maps_data.get("radar", {}).get("past", [])
         if not past_frames:
