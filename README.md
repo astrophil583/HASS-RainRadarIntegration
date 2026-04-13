@@ -12,6 +12,19 @@ Every 5 minutes the integration fetches the latest radar frame from RainViewer, 
 
 ## Installation
 
+### Via HACS (recommended)
+
+1. In Home Assistant open **HACS → Integrations**.
+2. Click the three-dot menu **⋮** in the top-right corner and choose **Custom repositories**.
+3. Paste `https://github.com/astrophil583/HASS-RainRadarIntegration` and select category **Integration**, then click **Add**.
+4. Search for **Rain Radar** in HACS and click **Download**.
+5. Restart Home Assistant.
+6. Go to **Settings → Devices & Services → Add integration** and search for **Rain Radar**.
+
+Future updates will appear directly in the HACS interface — click **Update** and restart.
+
+### Manual
+
 1. Copy the `custom_components/rain_radar` folder into your Home Assistant `custom_components` directory.
 2. Restart Home Assistant.
 3. Go to **Settings → Devices & Services → Add integration** and search for **Rain Radar**.

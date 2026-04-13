@@ -3,10 +3,10 @@
   "name": "Rain Radar",
   "version": "1.0.0",
   "config_flow": true,
-  "documentation": "https://github.com/rainviewer/api",
-  "issue_tracker": "",
+  "documentation": "https://github.com/astrophil583/HASS-RainRadarIntegration",
+  "issue_tracker": "https://github.com/astrophil583/HASS-RainRadarIntegration/issues",
   "requirements": ["Pillow>=9.0.0"],
   "dependencies": [],
-  "codeowners": [],
+  "codeowners": ["@astrophil583"],
   "iot_class": "cloud_polling"
 }
